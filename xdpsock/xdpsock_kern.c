@@ -1,6 +1,6 @@
 /* Use of this source code is governed by the Apache 2.0 license; see COPYING. */
 
-#include <uapi/linux/bpf.h>
+#include <bpf/bpf.h>
 
 struct bpf_map_struct {
 	unsigned int type;
@@ -32,5 +32,5 @@ struct bpf_map_struct SEC("maps") xsks_map = {
 SEC("xdp_sock")
 int xsks_prog()
 {
-	return bpf_redirect_map(&xsks_map, 2, 0);
+	return bpf_redirect_map(&xsks_map, 0, 0);
 }
