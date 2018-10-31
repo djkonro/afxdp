@@ -586,6 +586,7 @@ struct xdpsock* get_sock(int opt_ifindex){
 
 	if (!opt_ifindex) {
 		fprintf(stderr, "ERROR: interface does not exist\n");
+		exit(-1);
 	}
 
 	snprintf(xdp_filename, sizeof(xdp_filename), "xdpsock/xdpsock_user_kern.o");
