@@ -58,7 +58,6 @@ typedef __u64 u64;
 typedef __u32 u32;
 
 static u32 opt_xdp_flags;
-static int opt_ifindex;
 static int opt_interval = 1;
 
 struct xdp_umem_uqueue {
@@ -390,7 +389,7 @@ static struct xdp_umem *xdp_umem_configure(int sfd)
 	return umem;
 }
 
-static struct xdpsock *xsk_configure(struct xdp_umem *umem)
+static struct xdpsock *xsk_configure(struct xdp_umem *umem, int opt_ifindex)
 {
 	struct sockaddr_xdp sxdp = {};
 	struct xdp_mmap_offsets off;
@@ -462,9 +461,9 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem)
 	return xsk;
 }
 
-void close_sock(int ifindex)
+void close_sock(int opt_ifindex)
 {
-	bpf_set_link_xdp_fd(ifindex, -1, opt_xdp_flags);
+	bpf_set_link_xdp_fd(opt_ifindex, -1, opt_xdp_flags);
 }
 
 static void kick_tx(int fd)
@@ -525,7 +524,6 @@ int write_sock(struct xdpsock *xsk, char *pkt, int l)
 {
 	unsigned int idx = 0;
     struct xdp_desc descs[BATCH_SIZE];
-    
 
 	if (xq_nb_free(&xsk->tx, BATCH_SIZE) >= BATCH_SIZE) {
 		lassert(xq_enq_tx_only(xsk, &xsk->tx, idx, BATCH_SIZE, pkt, l) == 0);
@@ -545,73 +543,13 @@ struct data_val* read_sock(struct xdpsock *xsk)
 	struct xdp_desc descs[BATCH_SIZE];
     struct data_val* dval = malloc(sizeof(struct data_val));
 	unsigned int rcvd, i;
-	
-	 fd_set rfds;
-           struct timeval tv;
-           int retval;
-
-           /* Watch stdin (fd 0) to see when it has input. */
-
-           FD_ZERO(&rfds);
-           FD_SET(xsk->sfd, &rfds);
-
-           /* Wait up to five seconds. */
-
-           tv.tv_sec = 0;
-           tv.tv_usec = 0;
-           
-           //for (;;) {
-
-           retval = select(xsk->sfd+1, &rfds, NULL, NULL, &tv);
-           /* Don't rely on the value of tv now! */
-
-           if (retval == -1)
-               perror("select()");
-           else if (retval)
-               printf("Data is available now.\n");
-               /* FD_ISSET(0, &rfds) will be true. */
-           else
-               printf("No data within five seconds.\n");
-               
-              		rcvd = xq_deq(&xsk->rx, descs, BATCH_SIZE);
-	/*if (rcvd){ 
-	printf("got %d\n", rcvd);
-		break;
-    }*/
-    //}
-
-	/*
-	struct pollfd fds[2];
-	int ret, timeout, nfds = 1;
-
-	memset(fds, 0, sizeof(fds));
-
-	
-	fds[0].fd = xsk->sfd;
-	fds[0].events = POLLIN;
-	timeout = 1000; 
-
-	for (;;) {
-			ret = poll(fds, nfds, timeout);
-			if (ret > 0)
-				break;
-				
-		rcvd = xq_deq(&xsk->rx, descs, BATCH_SIZE);
-	if (rcvd){ 
-	printf("got %d\n", rcvd);
-		break;
-    }
-		
-	
-	}*/
-    
     
 
     dval->numb_packs = 0;
 	rcvd = xq_deq(&xsk->rx, descs, BATCH_SIZE);
 	if (!rcvd){ 
 		return dval;
-	}
+    }
 
     dval->data = malloc(rcvd * sizeof(char*));
     dval->sz = malloc(rcvd * sizeof(int));
@@ -633,8 +571,8 @@ struct data_val* read_sock(struct xdpsock *xsk)
 }
 
 
-struct xdpsock* get_sock(char *iface){
-
+struct xdpsock* get_sock(int opt_ifindex){
+	struct xdpsock *xsk = NULL;
 	struct bpf_prog_load_attr prog_load_attr = {
 		.prog_type	= BPF_PROG_TYPE_XDP,
 	};
@@ -644,12 +582,9 @@ struct xdpsock* get_sock(char *iface){
 	struct bpf_map *map;
 	int i, ret, key = 0;
 	pthread_t pt;
-	struct xdpsock *xsk;
 
-	opt_ifindex = if_nametoindex(iface);
 	if (!opt_ifindex) {
-		fprintf(stderr, "ERROR: interface \"%s\" does not exist\n",
-			iface);
+		fprintf(stderr, "ERROR: interface does not exist\n");
 	}
 
 	snprintf(xdp_filename, sizeof(xdp_filename), "xdpsock/xdpsock_user_kern.o");
@@ -676,7 +611,7 @@ struct xdpsock* get_sock(char *iface){
 		exit(EXIT_FAILURE);
 	}
 
-	xsk = xsk_configure(NULL);
+	xsk = xsk_configure(NULL, opt_ifindex);
 
 	ret = bpf_map_update_elem(xsks_map, &key, &xsk->sfd, 0);
 
@@ -687,26 +622,18 @@ int main(void)
 {
 	struct xdpsock *sock1, *sock2;
 	struct data_val* dval;
-	char *if1 = "lo";
-	char *if2 = "lo";
-	char data[] = {1, 1, 1, 1, 1, 1, 4, 1, 3, 2, 18, 93, 8, 6, 0, 1, 8, 0, 
+	int ifindex1 = if_nametoindex("veth1");
+	int ifindex2 = if_nametoindex("veth2");
+	sock1 = get_sock(ifindex1);
+	sock2 = get_sock(ifindex2);
+	char data[] = {1, 1, 1, 1, 1, 1, 4, 1, 3, 2, 18, 93, 8, 6, 0, 1, 8, 0,
 			6, 4, 0, 1, 54, 21, -3, 42, -18, -93, -64, -88, 8, 100,
 			0, 0, 0, 0, 0, 0, -40, 58, -44, 100};
 	int len = 42;
-	
 
-	
-	sock1 = get_sock(if1);
-	sock2 = get_sock(if2);
-	
-	write_sock(sock2, data, len);
-	
-	dval = read_sock(sock1);
-	
-	printf("np = %d\n", dval->numb_packs);
-	
-	close_sock(if_nametoindex(if1));
-	close_sock(if_nametoindex(if2));
-	
-	return 0;
+	write_sock(sock1, data, len);
+	read_sock(sock2);
+
+	close_sock(ifindex1);
+	close_sock(ifindex2);
 }
