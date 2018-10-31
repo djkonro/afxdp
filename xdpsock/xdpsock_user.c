@@ -1,4 +1,5 @@
-/* Use of this source code is governed by the Apache 2.0 license; see COPYING.
+/* Use of this source code is governed by the Apache 2.0 license
+ *
  * Originally based upon the linux kernel samples/bpf/xdpsock_user.c code:
  * Copyright(c) 2017 - 2018 Intel Corporation.
  */
@@ -618,19 +619,28 @@ struct xdpsock* get_sock(int opt_ifindex){
 	return xsk;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
 	struct xdpsock *sock1, *sock2;
 	struct data_val* dval;
-	int ifindex1 = if_nametoindex("veth1");
-	int ifindex2 = if_nametoindex("veth2");
-	sock1 = get_sock(ifindex1);
-	sock2 = get_sock(ifindex2);
+	int ifindex1 = -1;
+	int ifindex2 = -1;
 	char data[] = {1, 1, 1, 1, 1, 1, 4, 1, 3, 2, 18, 93, 8, 6, 0, 1, 8, 0,
 			6, 4, 0, 1, 54, 21, -3, 42, -18, -93, -64, -88, 8, 100,
 			0, 0, 0, 0, 0, 0, -40, 58, -44, 100};
 	int len = 42;
-
+	
+	if (argc < 3) {
+		printf("Usage:\n\t%s net_iface1 net_iface2\n", argv[0]);
+		return 0;
+	}
+	
+	ifindex1 = if_nametoindex(argv[1]);
+	ifindex2 = if_nametoindex(argv[2]);
+	
+	sock1 = get_sock(ifindex1);
+	sock2 = get_sock(ifindex2);
+	
 	write_sock(sock1, data, len);
 	read_sock(sock2);
 
