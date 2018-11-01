@@ -60,6 +60,8 @@ typedef __u32 u32;
 
 static u32 opt_xdp_flags;
 static int opt_interval = 1;
+static int opt_queue = 0;
+static u32 opt_xdp_bind_flags;
 
 struct xdp_umem_uqueue {
 	u32 cached_prod;
@@ -396,6 +398,7 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem, int opt_ifindex)
 	struct xdp_mmap_offsets off;
 	int sfd, ndescs = NUM_DESCS;
 	struct xdpsock *xsk;
+	bool shared = true;
 	socklen_t optlen;
 	u64 i;
 
@@ -408,7 +411,12 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem, int opt_ifindex)
 	xsk->sfd = sfd;
 	xsk->outstanding_tx = 0;
 
-	xsk->umem = xdp_umem_configure(sfd);
+	if (!umem) {
+		shared = false;
+		xsk->umem = xdp_umem_configure(sfd);
+	} else {
+		xsk->umem = umem;
+	}
 
 	lassert(setsockopt(sfd, SOL_XDP, XDP_RX_RING,
 			   &ndescs, sizeof(int)) == 0);
@@ -427,10 +435,11 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem, int opt_ifindex)
 			   XDP_PGOFF_RX_RING);
 	lassert(xsk->rx.map != MAP_FAILED);
 
-	for (i = 0; i < NUM_DESCS * FRAME_SIZE; i += FRAME_SIZE)
-		lassert(umem_fill_to_kernel(&xsk->umem->fq, &i, 1)
-			== 0);
-	
+	if (!shared) {
+		for (i = 0; i < NUM_DESCS * FRAME_SIZE; i += FRAME_SIZE)
+			lassert(umem_fill_to_kernel(&xsk->umem->fq, &i, 1)
+				== 0);
+	}
 
 	/* Tx */
 	xsk->tx.map = mmap(NULL,
@@ -456,6 +465,14 @@ static struct xdpsock *xsk_configure(struct xdp_umem *umem, int opt_ifindex)
 
 	sxdp.sxdp_family = PF_XDP;
 	sxdp.sxdp_ifindex = opt_ifindex;
+	sxdp.sxdp_queue_id = opt_queue;
+
+	if (shared) {
+		sxdp.sxdp_flags = XDP_SHARED_UMEM;
+		sxdp.sxdp_shared_umem_fd = umem->fd;
+	} else {
+		sxdp.sxdp_flags = opt_xdp_bind_flags;
+	}
 
 	lassert(bind(sfd, (struct sockaddr *)&sxdp, sizeof(sxdp)) == 0);
 
@@ -509,10 +526,10 @@ static inline int xq_enq_tx_only(struct xdpsock *xsk, struct xdp_uqueue *uq,
 		r[idx].addr	= (id + i) << FRAME_SHIFT;
 		r[idx].len	= len;
 
-        char *pkt = xq_get_data(xsk, r[idx].addr);
-        memcpy(pkt, data, len);
-        printf("Writing = %d\n", pkt);
-        hex_dump(pkt, r[idx].len, r[idx].addr);
+	char *pkt = xq_get_data(xsk, r[idx].addr);
+	memcpy(pkt, data, len);
+	printf("Writing = %d\n", pkt);
+	hex_dump(pkt, r[idx].len, r[idx].addr);
 	}
 
 	u_smp_wmb();
@@ -533,7 +550,7 @@ int write_sock(struct xdpsock *xsk, char *pkt, int l)
 		idx %= NUM_FRAMES;
 	}
 
-        complete_tx_only(xsk); 
+	complete_tx_only(xsk); 
 
     return l;
 }
@@ -542,27 +559,27 @@ int write_sock(struct xdpsock *xsk, char *pkt, int l)
 struct data_val* read_sock(struct xdpsock *xsk)
 {
 	struct xdp_desc descs[BATCH_SIZE];
-    struct data_val* dval = malloc(sizeof(struct data_val));
+	struct data_val* dval = malloc(sizeof(struct data_val));
 	unsigned int rcvd, i;
-    
 
-    dval->numb_packs = 0;
+
+	dval->numb_packs = 0;
 	rcvd = xq_deq(&xsk->rx, descs, BATCH_SIZE);
 	if (!rcvd){ 
 		return dval;
-    }
+	}
 
-    dval->data = malloc(rcvd * sizeof(char*));
-    dval->sz = malloc(rcvd * sizeof(int));
-    dval->numb_packs = rcvd;
+	dval->data = malloc(rcvd * sizeof(char*));
+	dval->sz = malloc(rcvd * sizeof(int));
+	dval->numb_packs = rcvd;
 	for (i = 0; i < rcvd; i++) {
 		char *pkt = xq_get_data(xsk, descs[i].addr);
 		printf("Reading = %d\n", pkt);
 		hex_dump(pkt, descs[i].len, descs[i].addr);
-        dval->data[i] = malloc(descs[i].len * sizeof(char));
-        memcpy(dval->data[i], pkt, descs[i].len);
-        dval->sz[i] = descs[i].len;
-        
+	dval->data[i] = malloc(descs[i].len * sizeof(char));
+	memcpy(dval->data[i], pkt, descs[i].len);
+	dval->sz[i] = descs[i].len;
+	
 	}
 
 	xsk->rx_npkts += rcvd;
@@ -572,16 +589,17 @@ struct data_val* read_sock(struct xdpsock *xsk)
 }
 
 
-struct xdpsock* get_sock(int opt_ifindex){
-	struct xdpsock *xsk = NULL;
+struct xdpsock** get_sock(int opt_ifindex){
+	struct xdpsock **xsks = malloc(2*sizeof(struct xdpsock));
 	struct bpf_prog_load_attr prog_load_attr = {
 		.prog_type	= BPF_PROG_TYPE_XDP,
 	};
-	int prog_fd, xsks_map;
+	int prog_fd, qidconf_map, xsks_map;
 	struct bpf_object *obj;
 	char xdp_filename[256];
 	struct bpf_map *map;
 	int i, ret, key = 0;
+	int num_socks = 0;
 	pthread_t pt;
 
 	if (!opt_ifindex) {
@@ -600,6 +618,14 @@ struct xdpsock* get_sock(int opt_ifindex){
 		exit(EXIT_FAILURE);
 	}
 
+	map = bpf_object__find_map_by_name(obj, "qidconf_map");
+	qidconf_map = bpf_map__fd(map);
+	if (qidconf_map < 0) {
+		fprintf(stderr, "ERROR: no qidconf map found: %s\n",
+			strerror(qidconf_map));
+		exit(EXIT_FAILURE);
+	}
+
 	map = bpf_object__find_map_by_name(obj, "xsks_map");
 	xsks_map = bpf_map__fd(map);
 	if (xsks_map < 0) {
@@ -613,38 +639,51 @@ struct xdpsock* get_sock(int opt_ifindex){
 		exit(EXIT_FAILURE);
 	}
 
-	xsk = xsk_configure(NULL, opt_ifindex);
+	ret = bpf_map_update_elem(qidconf_map, &key, &opt_queue, 0);
+	if (ret) {
+		fprintf(stderr, "ERROR: bpf_map_update_elem qidconf\n");
+		exit(EXIT_FAILURE);
+	}
 
-	ret = bpf_map_update_elem(xsks_map, &key, &xsk->sfd, 0);
+	xsks[num_socks++] = xsk_configure(NULL, opt_ifindex);
+	for (i = 0; i < 1; i++){
+		xsks[num_socks++] = xsk_configure(xsks[0]->umem, opt_ifindex);}
 
-	return xsk;
+	for (i = 0; i < num_socks; i++) {
+		key = i;
+		ret = bpf_map_update_elem(xsks_map, &key, &xsks[i]->sfd, 0);
+		if (ret) {
+			fprintf(stderr, "ERROR: bpf_map_update_elem %d\n", i);
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	return xsks;
 }
 
 int main(int argc, char **argv)
 {
+	struct xdpsock **xsks;
 	struct xdpsock *sock1, *sock2;
-	struct data_val* dval;
-	int ifindex1 = -1;
-	int ifindex2 = -1;
+	int ifindex = -1;
 	char data[] = {1, 1, 1, 1, 1, 1, 4, 1, 3, 2, 18, 93, 8, 6, 0, 1, 8, 0,
 			6, 4, 0, 1, 54, 21, -3, 42, -18, -93, -64, -88, 8, 100,
 			0, 0, 0, 0, 0, 0, -40, 58, -44, 100};
 	int len = 42;
 	
-	if (argc < 3) {
-		printf("Usage:\n\t%s net_iface1 net_iface2\n", argv[0]);
+	if (argc < 2) {
+		printf("Usage:\n\t%s net_iface\n", argv[0]);
 		return 0;
 	}
 	
-	ifindex1 = if_nametoindex(argv[1]);
-	ifindex2 = if_nametoindex(argv[2]);
+	ifindex = if_nametoindex(argv[1]);
 	
-	sock1 = get_sock(ifindex1);
-	sock2 = get_sock(ifindex2);
+	xsks = get_sock(ifindex);
+	sock1 = xsks[0];
+	sock2 = xsks[1];
 	
 	write_sock(sock1, data, len);
 	read_sock(sock2);
 
-	close_sock(ifindex1);
-	close_sock(ifindex2);
+	close_sock(ifindex);
 }
