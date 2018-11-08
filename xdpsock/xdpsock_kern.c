@@ -30,7 +30,7 @@ int xdpsock(struct xdp_md *ctx)
 	if (*qidconf != ctx->rx_queue_index)
 		return XDP_PASS;
 
-	idx = 0;
+	idx = 1;
 
 	return bpf_redirect_map(&xsks_map, idx, 0);
 }
