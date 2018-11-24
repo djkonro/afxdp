@@ -280,29 +280,6 @@ static inline void *xq_get_data(struct xdpsock *xsk, u64 addr)
 	return &xsk->umem->frames[addr];
 }
 
-static inline int xq_enq(struct xdp_uqueue *uq,
-			 const struct xdp_desc *descs,
-			 unsigned int ndescs)
-{
-	struct xdp_desc *r = uq->ring;
-	unsigned int i;
-
-	if (xq_nb_free(uq, ndescs) < ndescs)
-		return -ENOSPC;
-
-	for (i = 0; i < ndescs; i++) {
-		u32 idx = uq->cached_prod++ & uq->mask;
-
-		r[idx].addr = descs[i].addr;
-		r[idx].len = descs[i].len;
-	}
-
-	u_smp_wmb();
-
-	*uq->producer = uq->cached_prod;
-	return 0;
-}
-
 static inline int xq_deq(struct xdp_uqueue *uq,
 			 struct xdp_desc *descs,
 			 int ndescs)
