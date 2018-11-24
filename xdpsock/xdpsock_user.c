@@ -518,7 +518,6 @@ static inline int xq_enq_tx_only(struct xdpsock *xsk, struct xdp_uqueue *uq,
 int write_sock(struct xdpsock *xsk, char *pkt, int l)
 {
 	unsigned int idx = 0;
-    struct xdp_desc descs[BATCH_SIZE];
 
 	if (xq_nb_free(&xsk->tx, BATCH_SIZE) >= BATCH_SIZE) {
 		lassert(xq_enq_tx_only(xsk, &xsk->tx, idx, BATCH_SIZE, pkt, l) == 0);
