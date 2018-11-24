@@ -15,7 +15,7 @@ struct bpf_map_def SEC("maps") xsks_map = {
 	.type = BPF_MAP_TYPE_XSKMAP,
 	.key_size = sizeof(int),
 	.value_size = sizeof(int),
-	.max_entries = 4,
+	.max_entries = 2,
 };
 
 SEC("xdp_sock")
